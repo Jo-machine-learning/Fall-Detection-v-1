@@ -1,104 +1,132 @@
-import cv2
-import cvzone
-import math
-from ultralytics import YOLO
 import os
-import time
-from openpyxl import Workbook, load_workbook
-from datetime import datetime
+import cv2
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.utils import to_categorical
+from sklearn.model_selection import train_test_split
 
-source = 'vid3.mp4'
-is_image = os.path.splitext(source)[1].lower() in ['.jpg', '.jpeg', '.png']
+# ============================
+# 1) تحميل الداتا و تجهيزها
+# ============================
 
-model = YOLO("yolov8n.pt") 
-classnames = [line.strip() for line in open('classes.txt')]
+DATASET_PATH = "dataset/"   # جواها فولدرين: fall / no_fall
+IMG_SIZE = 128
 
-excel_file = "fall_log.xlsx"
+def load_data():
+    X, y = [], []
+    classes = ["no_fall", "fall"]
 
+    for label, folder in enumerate(classes):
+        folder_path = os.path.join(DATASET_PATH, folder)
+        for img_name in os.listdir(folder_path):
+            img_path = os.path.join(folder_path, img_name)
+            img = cv2.imread(img_path)
 
-if not os.path.exists(excel_file):
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Datetime", "Frame", "Class", "Confidence"])
-    wb.save(excel_file)
+            if img is None:
+                continue
 
-def log_fall(frame_number, class_name, confidence):
-    wb = load_workbook(excel_file)
-    ws = wb.active
-    ws.append([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), frame_number, class_name, confidence])
-    wb.save(excel_file)
+            img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+            img = img / 255.0
 
-def check_fall(width, height):
-    """نسبة عرض/ارتفاع لتحديد السقوط"""
-    return (height - width) < 0
+            X.append(img)
+            y.append(label)
 
-fall_state = False
-fall_color = (0, 0, 255)
-animation_counter = 0
+    X = np.array(X)
+    y = to_categorical(y, num_classes=2)
+    return X, y
 
-def update_fall_animation(detected):
-    global fall_color, animation_counter
-    if detected:
-        fall_color = (0, 255, 0)
-        animation_counter = 5
-    elif animation_counter > 0:
-        animation_counter -= 1
-    else:
-        fall_color = (0, 0, 255)
+print("[INFO] Loading dataset...")
+X, y = load_data()
 
-def process_frame(frame, frame_number):
-    global fall_state
-    frame = cv2.resize(frame, (640, 480))
-    results = model(frame)
-    fall_detected = False
+# ============================
+# 2) تقسيم الداتا Train/Val/Test
+# ============================
 
-    for info in results:
-        for box in info.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            confidence = float(box.conf[0])
-            class_detect = int(box.cls[0])
-            class_detect = classnames[class_detect]
-            
-            width = x2 - x1
-            height = y2 - y1
+X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.25, shuffle=True)
+X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.50, shuffle=True)
 
-            if confidence > 0.8 and class_detect == 'person':
-                cvzone.cornerRect(frame, [x1, y1, width, height], l=20, rt=6, colorR=(255,0,0))
-                
-                if check_fall(width, height):
-                    fall_detected = True
-                    
-                    log_fall(frame_number, class_detect, round(confidence, 2))
+print(f"Train: {len(X_train)},  Val: {len(X_val)},  Test: {len(X_test)}")
 
-    update_fall_animation(fall_detected)
-    
-    
-    cv2.rectangle(frame, (10,10), (180,60), fall_color, 2)
-    text = "Fall Detected" if fall_detected else "No Fall"
-    cv2.putText(frame, text, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1, fall_color, 2)
+# ============================
+# 3) بناء المودل
+# ============================
 
-    return frame
+model = Sequential([
+    Conv2D(32, (3,3), activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 3)),
+    MaxPooling2D(2,2),
 
-if is_image:
-    frame = cv2.imread(source)
-    frame = process_frame(frame, 1)
+    Conv2D(64, (3,3), activation='relu'),
+    MaxPooling2D(2,2),
+
+    Conv2D(128, (3,3), activation='relu'),
+    MaxPooling2D(2,2),
+
+    Flatten(),
+    Dense(128, activation='relu'),
+    Dropout(0.5),
+    Dense(2, activation='softmax')
+])
+
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+model.summary()
+
+# ============================
+# 4) تدريب المودل
+# ============================
+
+print("[INFO] Training model...")
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=12,
+    batch_size=32
+)
+
+model.save("fall_model.h5")
+print("[INFO] Model saved!")
+
+# ============================
+# 5) اختبار المودل Test
+# ============================
+
+loss, acc = model.evaluate(X_test, y_test)
+print(f"[TEST] Accuracy = {acc*100:.2f}%")
+
+# ============================
+# 6) تشغيل الفيديو و عمل Fall Detection
+# ============================
+
+print("[INFO] Starting video detection...")
+
+cap = cv2.VideoCapture("vid4.mp4")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    img = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
+    img = img / 255.0
+    img = np.expand_dims(img, axis=0)
+
+    pred = model.predict(img)[0]
+    cls = np.argmax(pred)
+
+    label = "FALL" if cls == 1 else "NO FALL"
+
+    cv2.putText(frame, label, (20,40),
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                1, (0,0,255) if label=="FALL" else (0,255,0), 3)
+
     cv2.imshow("Fall Detection", frame)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-else:
-    cap = cv2.VideoCapture(source)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    delay = int(1000 / fps)
-    frame_number = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame_number += 1
-        frame = process_frame(frame, frame_number)
-        cv2.imshow("Fall Detection", frame)
-        if cv2.waitKey(delay) & 0xFF == ord('q'):
-            break
-    cap.release()
-    cv2.destroyAllWindows()
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
