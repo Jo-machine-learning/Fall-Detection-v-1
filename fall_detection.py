@@ -13,15 +13,11 @@ source = 'vid3.mp4'
 
 model = YOLO("yolov8n.pt")  
 
-
 classnames = [line.strip() for line in open('classes.txt')]
-
 
 tracker = DeepSort(max_age=15)
 
-
 fall_memory = {}
-
 
 excel_file = "fall_log.xlsx"
 if not os.path.exists(excel_file):
@@ -29,18 +25,15 @@ if not os.path.exists(excel_file):
     df.to_excel(excel_file, index=False)
 
 def log_fall(tid, confidence):
-    """تسجيل السقوط في ملف Excel"""
     df = pd.read_excel(excel_file)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     df = pd.concat([df, pd.DataFrame([{"ID": tid, "Timestamp": timestamp, "Confidence": confidence}])], ignore_index=True)
     df.to_excel(excel_file, index=False)
 
 def check_fall(width, height):
-    """نسبة عرض/ارتفاع لتحديد السقوط""" # بص هنا لو width أكبر من height يبقى بيرجع True → يعني الشخص ممكن يكون واقع
     return (height - width) < 0
 
 def update_fall_animation(tid, detected):
-    """تحديث اللون والانيميشن لكل Track"""
     mem = fall_memory[tid]
     if detected:
         mem['fall_color'] = (0, 255, 0)
@@ -56,7 +49,6 @@ def process_frame(frame):
 
     detections = []
 
-  
     for info in results:
         for box in info.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -91,20 +83,15 @@ def process_frame(frame):
 
         fall_detected = mem['fall_frames'] > 4 
 
-
         update_fall_animation(tid, fall_detected)
 
         any_fall = any_fall or fall_detected
 
-    
         cvzone.cornerRect(frame, [x1, y1, width, height], l=20, rt=6, colorR=(255,0,0))
-        cvzone.putTextRect(frame, f'ID:{tid}', [x1, y1-20], scale=1, thickness=2, colorR=(0,255,0))
 
-      
         if fall_detected:
             log_fall(tid, round(track.det_confidence, 2) if hasattr(track, 'det_confidence') else 1.0)
 
-  
     big_box_color = (0, 255, 0) if any_fall else (0, 0, 255)
     cv2.rectangle(frame, (10,10), (200,70), big_box_color, -1)
     text = "Fall Detected" if any_fall else "No Fall"
